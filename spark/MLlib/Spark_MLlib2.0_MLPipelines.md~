@@ -1,0 +1,171 @@
+#**Spark MLlib 2.0 ML Piplines教程**
+ML Piplines 是建立在高级API DataFrame上的
+(来自[spark官网](https://spark.apache.org)上的翻译)
+#管道的基本概念
+  管道的概念来自scikit-learn
+ - DataFrame:DataFrame是Spark SQL的数据集，能够容纳各种数据类型。
+ - Transformer:是一种算法，可以将一种DataFrame转换成另一种DataFrame。例如，一个ML模型就一个Transformer 将带有特征的DataFrame转换成有预测结果的DataFrame。
+ - Estimator：是一个算法，训练一个DataFrame产生一个Transformer。例如，一个学习算法就是一个Estimator通过训练一个DataFrame从而得到一个模型。
+ - Pipline：管道是用来连接多个Transformer和Estimator共同的构建一个ML工作流程。
+ - Parameter：所有的Transformer和Estimator为特殊变量提供了一个公共分享API。
+  
+##DataFrame
+
+##Pipeline components
+###TransFormer
+  TransFormer是一个抽象的概念，包括`特征转换过程和模型转换`。`TransFormer实现一个方法transform（）`。
+  - 特征转换：读取一个DataFrame中的一列将其映射到一个新列上，输出一个带有映射列的新DataFrame。
+  - 模型转换：读取含有特征向量的列，预测每个特征向量的标签，并输出一个新的DataFrame附加着一列预测标签。
+###Estimators
+  Estimator抽象了一个学习算法或算法训练数据集的概念。从技术上来讲，`Estimators实现了一个fit（）方法，将一个DataFrame训练从而得到模型`。例如，一个学习算法LogisticRegression就是一个Estimator，调用fit（）方法即可得到模型（可以用于Transformer）
+##Pipeline
+###how it work
+  一个管道由一组阶段构成，每个阶段可以是TransFormer或者Estimators构成。
+  一个处理文本文档的简单例子，下面是使用Pipeline训练数据模型的例子。
+![ML 管道的例子](http://spark.apache.org/docs/latest/img/ml-Pipeline.png)
+  最上面一行表示Pipeline有3个阶段，前面两个（Tokenizer和HashingTF）是Tranformer(蓝色)，第3个是一个Estimators（红色）。下面一行是数据流过Pipeline，其中圆柱型代表的是DataFrame。Pipeline.fit()是相对原始DataFrame（Raw text）而言的。Tokenizer.transform()方法将raw text的数据分割成单词，添加一个新列words到DataFrame中。HashingTF.transform()方法将words列转化成特征向量，在DataFrame中添加新的一列存放特征向量。LogisticRegression是一个Estimator，Pipeline首先将调用LogisticRegression.fit()产生一个LogisticRegressionModel。如果Pipeline还用更多操作，将会调用LogisticRegressionModel的transform()方法处理DataFrame在进行下一个操作之前。
+  当Pipeline的fit()方法完成后，会产生一个PipelineModel，这是一个Tranformer。
+  ![ML PipelineModel 例子](http://spark.apache.org/docs/latest/img/ml-PipelineModel.png)
+  PipelineModel有相同步骤对应与源Pipeline，但是所用的Estimators都会变为Transformers。当PipelineModel的transform（）方法被调用时，测试数据集将会流过源Pipeline。每个操作transform（）方法将会跟新数据集并自动进入下一个操作。
+  > 个人见解:
+  >> 通过上面两张图可以看出管道的用处，其实对于需要训练模型的数据分析是相当方便的。
+  >> 首先，构建Pipeline用于训练一个模型，有了模型就可以调用tranform()方法，这样就能预测测试数据集了。其中就是重用了源管道的结构，只是将源管道中的Estimators的变换成了Transformers操作。
+  >> \--------------------------------------------------------------------------------
+  >> [question]:如果是不需要训练模型岂不是很尴尬。
+###Details
+- DAG Pipeline:例子给的是线性的，但是Pipeline只要是有向无环图即可。如果Pipeline形成了有向无环图需要指定其拓扑。
+- Runtime checking：由于DataFrame的类型多样，所以Pipeline不能在编译时进行参数检查，只能在运行时进行参数检查。
+- Unique Pipeline stages: 即使是相同的一个操作在Pipeline中出现两次也会有不一样的IDs。
+##参数
+  Transformers和Estimators为指定的变量使用相同的API。
+  一个Param 就是一个包含自身名字的doucumentation，一个ParamMap就是一个键值对 (parameter, value) 。
+  有两种方法将参数传入算法中：
+  > 1.为实例传入一个参数。例如，如果lr是的一个实例LogisticRegression，我们可以称之为lr.setMaxIter(10)使lr.fit()至多10次迭代使用。
+  > 2.将ParamMap传到fit()或transform()方法中。任何的参数在ParamMap中都将被复写。
+
+##保存和加载管道
+
+#示例代码
+##Example: Estimator, Transformer, and Param
+```scala
+import org.apache.spark.ml.classification.LogisticRegression
+import org.apache.spark.ml.linalg.{Vector, Vectors}
+import org.apache.spark.ml.param.ParamMap
+import org.apache.spark.sql.Row
+
+// Prepare training data from a list of (label, features) tuples.
+val training = spark.createDataFrame(Seq(
+  (1.0, Vectors.dense(0.0, 1.1, 0.1)),
+  (0.0, Vectors.dense(2.0, 1.0, -1.0)),
+  (0.0, Vectors.dense(2.0, 1.3, 1.0)),
+  (1.0, Vectors.dense(0.0, 1.2, -0.5))
+)).toDF("label", "features")
+
+// Create a LogisticRegression instance. This instance is an Estimator.
+val lr = new LogisticRegression()
+// Print out the parameters, documentation, and any default values.
+println("LogisticRegression parameters:\n" + lr.explainParams() + "\n")
+
+// We may set parameters using setter methods.
+lr.setMaxIter(10)
+  .setRegParam(0.01)
+
+// Learn a LogisticRegression model. This uses the parameters stored in lr.
+val model1 = lr.fit(training)
+// Since model1 is a Model (i.e., a Transformer produced by an Estimator),
+// we can view the parameters it used during fit().
+// This prints the parameter (name: value) pairs, where names are unique IDs for this
+// LogisticRegression instance.
+println("Model 1 was fit using parameters: " + model1.parent.extractParamMap)
+
+// We may alternatively specify parameters using a ParamMap,
+// which supports several methods for specifying parameters.
+val paramMap = ParamMap(lr.maxIter -> 20)
+  .put(lr.maxIter, 30)  // Specify 1 Param. This overwrites the original maxIter.
+  .put(lr.regParam -> 0.1, lr.threshold -> 0.55)  // Specify multiple Params.
+
+// One can also combine ParamMaps.
+val paramMap2 = ParamMap(lr.probabilityCol -> "myProbability")  // Change output column name.
+val paramMapCombined = paramMap ++ paramMap2
+
+// Now learn a new model using the paramMapCombined parameters.
+// paramMapCombined overrides all parameters set earlier via lr.set* methods.
+val model2 = lr.fit(training, paramMapCombined)
+println("Model 2 was fit using parameters: " + model2.parent.extractParamMap)
+
+// Prepare test data.
+val test = spark.createDataFrame(Seq(
+  (1.0, Vectors.dense(-1.0, 1.5, 1.3)),
+  (0.0, Vectors.dense(3.0, 2.0, -0.1)),
+  (1.0, Vectors.dense(0.0, 2.2, -1.5))
+)).toDF("label", "features")
+
+// Make predictions on test data using the Transformer.transform() method.
+// LogisticRegression.transform will only use the 'features' column.
+// Note that model2.transform() outputs a 'myProbability' column instead of the usual
+// 'probability' column since we renamed the lr.probabilityCol parameter previously.
+model2.transform(test)
+  .select("features", "label", "myProbability", "prediction")
+  .collect()
+  .foreach { case Row(features: Vector, label: Double, prob: Vector, prediction: Double) =>
+    println(s"($features, $label) -> prob=$prob, prediction=$prediction")
+  }
+```
+##Example: Pipeline
+```scala
+import org.apache.spark.ml.{Pipeline, PipelineModel}
+import org.apache.spark.ml.classification.LogisticRegression
+import org.apache.spark.ml.feature.{HashingTF, Tokenizer}
+import org.apache.spark.ml.linalg.Vector
+import org.apache.spark.sql.Row
+
+// Prepare training documents from a list of (id, text, label) tuples.
+val training = spark.createDataFrame(Seq(
+  (0L, "a b c d e spark", 1.0),
+  (1L, "b d", 0.0),
+  (2L, "spark f g h", 1.0),
+  (3L, "hadoop mapreduce", 0.0)
+)).toDF("id", "text", "label")
+
+// Configure an ML pipeline, which consists of three stages: tokenizer, hashingTF, and lr.
+val tokenizer = new Tokenizer()
+  .setInputCol("text")
+  .setOutputCol("words")
+val hashingTF = new HashingTF()
+  .setNumFeatures(1000)
+  .setInputCol(tokenizer.getOutputCol)
+  .setOutputCol("features")
+val lr = new LogisticRegression()
+  .setMaxIter(10)
+  .setRegParam(0.01)
+val pipeline = new Pipeline()
+  .setStages(Array(tokenizer, hashingTF, lr))
+
+// Fit the pipeline to training documents.
+val model = pipeline.fit(training)
+
+// Now we can optionally save the fitted pipeline to disk
+model.write.overwrite().save("/tmp/spark-logistic-regression-model")
+
+// We can also save this unfit pipeline to disk
+pipeline.write.overwrite().save("/tmp/unfit-lr-model")
+
+// And load it back in during production
+val sameModel = PipelineModel.load("/tmp/spark-logistic-regression-model")
+
+// Prepare test documents, which are unlabeled (id, text) tuples.
+val test = spark.createDataFrame(Seq(
+  (4L, "spark i j k"),
+  (5L, "l m n"),
+  (6L, "mapreduce spark"),
+  (7L, "apache hadoop")
+)).toDF("id", "text")
+
+// Make predictions on test documents.
+model.transform(test)
+  .select("id", "text", "probability", "prediction")
+  .collect()
+  .foreach { case Row(id: Long, text: String, prob: Vector, prediction: Double) =>
+    println(s"($id, $text) --> prob=$prob, prediction=$prediction")
+  }
+```
